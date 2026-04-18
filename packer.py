@@ -24,10 +24,11 @@ class PackedImage:
 class MaxRectsPacker:
     """Packs rectangles into a bin using the Maximal Rectangles algorithm (Best Short Side Fit)."""
 
-    def __init__(self, max_width: int, max_height: int, padding: int = 2):
+    def __init__(self, max_width: int, max_height: int, padding: int = 2, allow_rotation: bool = True):
         self.max_width = max_width
         self.max_height = max_height
         self.padding = padding
+        self.allow_rotation = allow_rotation
         self.free_rects: list[Rect] = []
         self.used_rects: list[Rect] = []
         self._reset()
@@ -101,7 +102,7 @@ class MaxRectsPacker:
                     best_long_side = long_side
 
             # Try rotated orientation
-            if height <= free.width and width <= free.height:
+            if self.allow_rotation and height <= free.width and width <= free.height:
                 leftover_h = abs(free.width - height)
                 leftover_v = abs(free.height - width)
                 short_side = min(leftover_h, leftover_v)

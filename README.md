@@ -9,7 +9,9 @@ A free, open-source texture packer with GUI. Add images, pack them into a sprite
 - Live atlas preview with checkerboard transparency
 - Animation player with Forward, Reverse, and Ping-Pong playback modes
 - Configurable atlas size (256–8192) and padding (0–32px)
-- Exports PNG atlas + JSON metadata
+- Export formats:
+  - **Generic** — PNG atlas + JSON metadata (TexturePacker-style `frames` hash)
+  - **Godot 4** — PNG atlas + one `AtlasTexture` `.tres` per sprite, ready to drop into a Godot project
 
 ## Setup (Windows)
 
@@ -87,7 +89,9 @@ spriteful/
 
 ## Output Format
 
-Exports two files:
+Pick an output format from the **Format** dropdown next to the Export button.
+
+### Generic (PNG + JSON)
 
 - `atlas.png` — the packed sprite sheet
 - `atlas.json` — frame metadata:
@@ -104,3 +108,22 @@ Exports two files:
   }
 }
 ```
+
+### Godot 4 (PNG + .tres)
+
+- `atlas.png` — the packed sprite sheet
+- `sprite_01.tres`, `sprite_02.tres`, … — one `AtlasTexture` resource per sprite, each referencing the shared atlas:
+
+```tres
+[gd_resource type="AtlasTexture" load_steps=2 format=3]
+
+[ext_resource type="Texture2D" path="res://atlas.png" id="1"]
+
+[resource]
+atlas = ExtResource("1")
+region = Rect2(0, 0, 64, 64)
+```
+
+Drop the PNG and every `.tres` into the same folder inside your Godot project. The `.tres` files assume the PNG lives at `res://atlas.png` — if you place it elsewhere, update the `path` line in each `.tres`.
+
+Rotation is disabled in Godot mode (Godot's `AtlasTexture` has no rotation field), so atlases may be slightly larger than in Generic mode.

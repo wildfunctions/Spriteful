@@ -15,11 +15,14 @@ from PySide6.QtWidgets import (
 )
 
 from packer import MaxRectsPacker, PackedImage
-from exporter import export_atlas
+from exporter import export_atlas, export_atlas_godot
 
 SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tga", ".webp"}
 
 ATLAS_SIZES = [256, 512, 1024, 2048, 4096, 8192]
+
+FORMAT_GENERIC = "generic"
+FORMAT_GODOT = "godot"
 
 
 class DropZoneList(QListWidget):
@@ -413,6 +416,14 @@ class MainWindow(QMainWindow):
         self.spin_padding.setValue(2)
         bottom.addWidget(self.spin_padding)
 
+        bottom.addSpacing(20)
+
+        bottom.addWidget(QLabel("Format:"))
+        self.combo_format = QComboBox()
+        self.combo_format.addItem("Generic (PNG + JSON)", FORMAT_GENERIC)
+        self.combo_format.addItem("Godot 4 (PNG + .tres)", FORMAT_GODOT)
+        bottom.addWidget(self.combo_format)
+
         bottom.addStretch()
 
         self.btn_export = QPushButton("Export PNG + JSON")
@@ -437,6 +448,7 @@ class MainWindow(QMainWindow):
         self.file_list.files_dropped.connect(self._add_image_paths)
         self.combo_size.currentIndexChanged.connect(self._repack)
         self.spin_padding.valueChanged.connect(self._repack)
+        self.combo_format.currentIndexChanged.connect(self._on_format_changed)
         self.file_list.itemSelectionChanged.connect(self._on_selection_changed)
 
     def _on_add_files(self):
@@ -516,6 +528,14 @@ class MainWindow(QMainWindow):
         else:
             self.anim_player.set_frames([])
 
+    def _on_format_changed(self):
+        """Format change may require repacking (Godot disables rotation)."""
+        fmt = self.combo_format.currentData()
+        self.btn_export.setText(
+            "Export PNG + .tres" if fmt == FORMAT_GODOT else "Export PNG + JSON"
+        )
+        self._repack()
+
     def _repack(self):
         if not self.image_entries:
             self.preview.set_preview(None)
@@ -525,8 +545,9 @@ class MainWindow(QMainWindow):
 
         max_size = self.combo_size.currentData()
         padding = self.spin_padding.value()
+        allow_rotation = self.combo_format.currentData() != FORMAT_GODOT
 
-        packer = MaxRectsPacker(max_size, max_size, padding)
+        packer = MaxRectsPacker(max_size, max_size, padding, allow_rotation=allow_rotation)
         packed, atlas_w, atlas_h = packer.pack(self.image_entries)
 
         self.last_packed = packed
@@ -609,24 +630,43 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
-        # Strip extension — exporter adds .png and .json
+        # Strip extension — exporters add their own suffixes
         base = path
         if base.lower().endswith(".png"):
             base = base[:-4]
 
+        fmt = self.combo_format.currentData()
+
         try:
-            png_path, json_path = export_atlas(
-                self.last_packed,
-                self.last_atlas_size[0],
-                self.last_atlas_size[1],
-                base,
-            )
-            QMessageBox.information(
-                self,
-                "Export Complete",
-                f"Atlas exported successfully!\n\n"
-                f"PNG: {png_path}\n"
-                f"JSON: {json_path}",
-            )
+            if fmt == FORMAT_GODOT:
+                png_path, tres_paths = export_atlas_godot(
+                    self.last_packed,
+                    self.last_atlas_size[0],
+                    self.last_atlas_size[1],
+                    base,
+                )
+                QMessageBox.information(
+                    self,
+                    "Export Complete",
+                    f"Atlas exported successfully!\n\n"
+                    f"PNG: {png_path}\n"
+                    f"{len(tres_paths)} AtlasTexture .tres files written alongside.\n\n"
+                    f"Each .tres references res://{Path(png_path).name} — move the PNG "
+                    f"into your Godot project root, or edit the paths if placed elsewhere.",
+                )
+            else:
+                png_path, json_path = export_atlas(
+                    self.last_packed,
+                    self.last_atlas_size[0],
+                    self.last_atlas_size[1],
+                    base,
+                )
+                QMessageBox.information(
+                    self,
+                    "Export Complete",
+                    f"Atlas exported successfully!\n\n"
+                    f"PNG: {png_path}\n"
+                    f"JSON: {json_path}",
+                )
         except Exception as e:
             QMessageBox.critical(self, "Export Failed", f"Error exporting atlas:\n{e}")
