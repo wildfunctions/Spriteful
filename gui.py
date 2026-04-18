@@ -11,10 +11,10 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QListWidget, QLabel, QComboBox, QSpinBox, QFileDialog,
     QMessageBox, QSplitter, QScrollArea, QFrame, QAbstractItemView,
-    QSlider, QGroupBox,
+    QSlider, QGroupBox, QCheckBox,
 )
 
-from packer import MaxRectsPacker, PackedImage
+from packer import MaxRectsPacker, PackedImage, SpriteEntry, compute_trim_bbox
 from exporter import export_atlas, export_atlas_godot
 
 SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tga", ".webp"}
@@ -323,7 +323,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1000, 600)
         self.resize(1300, 750)
 
-        self.image_entries: list[tuple[str, str, int, int]] = []  # (path, name, w, h)
+        self.image_entries: list[SpriteEntry] = []
         self.last_packed: list[PackedImage] = []
         self.last_atlas_size: tuple[int, int] = (0, 0)
 
@@ -418,6 +418,13 @@ class MainWindow(QMainWindow):
 
         bottom.addSpacing(20)
 
+        self.chk_trim = QCheckBox("Trim")
+        self.chk_trim.setChecked(True)
+        self.chk_trim.setToolTip("Crop transparent borders around each sprite before packing")
+        bottom.addWidget(self.chk_trim)
+
+        bottom.addSpacing(20)
+
         bottom.addWidget(QLabel("Format:"))
         self.combo_format = QComboBox()
         self.combo_format.addItem("Generic (PNG + JSON)", FORMAT_GENERIC)
@@ -448,6 +455,7 @@ class MainWindow(QMainWindow):
         self.file_list.files_dropped.connect(self._add_image_paths)
         self.combo_size.currentIndexChanged.connect(self._repack)
         self.spin_padding.valueChanged.connect(self._repack)
+        self.chk_trim.toggled.connect(self._repack)
         self.combo_format.currentIndexChanged.connect(self._on_format_changed)
         self.file_list.itemSelectionChanged.connect(self._on_selection_changed)
 
@@ -474,22 +482,35 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "No Images", "No supported image files found in that folder.")
 
     def _add_image_paths(self, paths: list[str]):
-        existing = {entry[0] for entry in self.image_entries}
+        existing = {e.filepath for e in self.image_entries}
 
         added = 0
         for path in paths:
             if path in existing:
                 continue
             try:
-                img = Image.open(path)
-                w, h = img.size
-                img.close()
+                source_w, source_h, tx, ty, tw, th = compute_trim_bbox(path)
             except Exception:
                 continue
 
             name = Path(path).name
-            self.image_entries.append((path, name, w, h))
-            self.file_list.addItem(f"{name}  ({w}x{h})")
+            entry = SpriteEntry(
+                filepath=path,
+                filename=name,
+                source_width=source_w,
+                source_height=source_h,
+                trim_x=tx,
+                trim_y=ty,
+                trim_w=tw,
+                trim_h=th,
+            )
+            self.image_entries.append(entry)
+
+            if (tw, th) != (source_w, source_h):
+                self.file_list.addItem(f"{name}  ({source_w}x{source_h} → {tw}x{th})")
+            else:
+                self.file_list.addItem(f"{name}  ({source_w}x{source_h})")
+
             existing.add(path)
             added += 1
 
@@ -523,7 +544,7 @@ class MainWindow(QMainWindow):
         """Update animation player with currently selected images."""
         indices = sorted(idx.row() for idx in self.file_list.selectedIndexes())
         if indices:
-            paths = [self.image_entries[i][0] for i in indices]
+            paths = [self.image_entries[i].filepath for i in indices]
             self.anim_player.set_frames(paths)
         else:
             self.anim_player.set_frames([])
@@ -546,9 +567,29 @@ class MainWindow(QMainWindow):
         max_size = self.combo_size.currentData()
         padding = self.spin_padding.value()
         allow_rotation = self.combo_format.currentData() != FORMAT_GODOT
+        trim_enabled = self.chk_trim.isChecked()
+
+        if trim_enabled:
+            entries_to_pack = self.image_entries
+        else:
+            # Override each entry's trim bbox to the full image — same effect as
+            # "no trim" but keeps the packer interface uniform.
+            entries_to_pack = [
+                SpriteEntry(
+                    filepath=e.filepath,
+                    filename=e.filename,
+                    source_width=e.source_width,
+                    source_height=e.source_height,
+                    trim_x=0,
+                    trim_y=0,
+                    trim_w=e.source_width,
+                    trim_h=e.source_height,
+                )
+                for e in self.image_entries
+            ]
 
         packer = MaxRectsPacker(max_size, max_size, padding, allow_rotation=allow_rotation)
-        packed, atlas_w, atlas_h = packer.pack(self.image_entries)
+        packed, atlas_w, atlas_h = packer.pack(entries_to_pack)
 
         self.last_packed = packed
         self.last_atlas_size = (atlas_w, atlas_h)
@@ -594,8 +635,10 @@ class MainWindow(QMainWindow):
             try:
                 pil_img = Image.open(p.filepath).convert("RGBA")
 
-                # Handle rotation
-                if pil_img.width != p.width or pil_img.height != p.height:
+                if p.trimmed:
+                    pil_img = pil_img.crop((p.trim_x, p.trim_y,
+                                            p.trim_x + p.trim_w, p.trim_y + p.trim_h))
+                if p.rotated:
                     pil_img = pil_img.rotate(90, expand=True)
 
                 data = pil_img.tobytes("raw", "RGBA")

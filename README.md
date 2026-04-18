@@ -6,6 +6,7 @@ A free, open-source texture packer with GUI. Add images, pack them into a sprite
 
 - Drag & drop images or folders into the app
 - Maximal Rectangles bin packing algorithm
+- **Transparency trimming** — crops transparent borders before packing for dramatically smaller atlases (toggleable)
 - Live atlas preview with checkerboard transparency
 - Animation player with Forward, Reverse, and Ping-Pong playback modes
 - Configurable atlas size (256–8192) and padding (0–32px)
@@ -94,20 +95,27 @@ Pick an output format from the **Format** dropdown next to the Export button.
 ### Generic (PNG + JSON)
 
 - `atlas.png` — the packed sprite sheet
-- `atlas.json` — frame metadata:
+- `atlas.json` — frame metadata (TexturePacker-compatible `frames` hash):
 
 ```json
 {
   "atlas": { "width": 512, "height": 256, "image": "atlas.png" },
   "frames": {
     "sprite_01.png": {
-      "frame": { "x": 0, "y": 0, "w": 64, "h": 64 },
+      "frame": { "x": 0, "y": 0, "w": 40, "h": 30 },
       "sourceSize": { "w": 64, "h": 64 },
+      "spriteSourceSize": { "x": 12, "y": 16, "w": 40, "h": 30 },
+      "trimmed": true,
       "rotated": false
     }
   }
 }
 ```
+
+- `frame` — where the sprite lives in the atlas (post-trim, post-rotation)
+- `sourceSize` — original (untrimmed) sprite dimensions
+- `spriteSourceSize` — where the trimmed region sits inside the original frame
+- `trimmed` / `rotated` — flags the engine needs to reconstruct the sprite
 
 ### Godot 4 (PNG + .tres)
 
@@ -121,8 +129,11 @@ Pick an output format from the **Format** dropdown next to the Export button.
 
 [resource]
 atlas = ExtResource("1")
-region = Rect2(0, 0, 64, 64)
+region = Rect2(0, 0, 40, 30)
+margin = Rect2(12, 16, 12, 18)
 ```
+
+Trimmed sprites include a `margin = Rect2(left, top, right, bottom)` so Godot still reports the original (pre-trim) sprite size when you query `get_size()` — your UI code and positioning logic keeps working as if the sprite weren't trimmed.
 
 Drop the PNG and every `.tres` into the same folder inside your Godot project. The `.tres` files assume the PNG lives at `res://atlas.png` — if you place it elsewhere, update the `path` line in each `.tres`.
 

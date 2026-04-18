@@ -13,18 +13,19 @@ def _build_atlas_image(
     atlas_width: int,
     atlas_height: int,
 ) -> Image.Image:
-    """Paint all packed sprites into a single RGBA atlas image."""
+    """Paint packed sprites into a single RGBA atlas, respecting trim + rotation."""
     atlas = Image.new("RGBA", (atlas_width, atlas_height), (0, 0, 0, 0))
 
-    for packed in packed_images:
-        img = Image.open(packed.filepath).convert("RGBA")
+    for p in packed_images:
+        img = Image.open(p.filepath).convert("RGBA")
 
-        # Handle rotation: if packed dimensions differ from source, the image was rotated
-        if img.width == packed.width and img.height == packed.height:
-            atlas.paste(img, (packed.x, packed.y))
-        else:
-            rotated = img.rotate(90, expand=True)
-            atlas.paste(rotated, (packed.x, packed.y))
+        if p.trimmed:
+            img = img.crop((p.trim_x, p.trim_y, p.trim_x + p.trim_w, p.trim_y + p.trim_h))
+
+        if p.rotated:
+            img = img.rotate(90, expand=True)
+
+        atlas.paste(img, (p.x, p.y))
 
     return atlas
 
@@ -35,10 +36,16 @@ def export_atlas(
     atlas_height: int,
     output_path: str,
 ) -> tuple[str, str]:
-    """Export the packed atlas as a PNG and a generic JSON metadata file.
+    """Export the packed atlas as a PNG + generic JSON metadata file.
+
+    JSON follows the TexturePacker `frames` hash convention:
+      - frame: where the sprite lives in the atlas (post-trim, post-rotation)
+      - sourceSize: original (untrimmed) sprite dimensions
+      - spriteSourceSize: where the trimmed region sits inside the original frame
+      - trimmed / rotated: flags
 
     Returns:
-        (png_path, json_path) of the exported files
+        (png_path, json_path)
     """
     atlas = _build_atlas_image(packed_images, atlas_width, atlas_height)
 
@@ -56,22 +63,26 @@ def export_atlas(
         "frames": {},
     }
 
-    for packed in packed_images:
-        source_img = Image.open(packed.filepath)
-        rotated = not (source_img.width == packed.width and source_img.height == packed.height)
-
-        meta["frames"][packed.filename] = {
+    for p in packed_images:
+        meta["frames"][p.filename] = {
             "frame": {
-                "x": packed.x,
-                "y": packed.y,
-                "w": packed.width,
-                "h": packed.height,
+                "x": p.x,
+                "y": p.y,
+                "w": p.width,
+                "h": p.height,
             },
             "sourceSize": {
-                "w": source_img.width,
-                "h": source_img.height,
+                "w": p.source_width,
+                "h": p.source_height,
             },
-            "rotated": rotated,
+            "spriteSourceSize": {
+                "x": p.trim_x,
+                "y": p.trim_y,
+                "w": p.trim_w,
+                "h": p.trim_h,
+            },
+            "trimmed": p.trimmed,
+            "rotated": p.rotated,
         }
 
     with open(json_path, "w") as f:
@@ -89,14 +100,13 @@ def export_atlas_godot(
 ) -> tuple[str, list[str]]:
     """Export the packed atlas as a PNG + one AtlasTexture .tres per sprite.
 
-    Each .tres file is a standalone Godot 4 resource pointing at the shared atlas PNG.
-    The packer must have been run with allow_rotation=False — AtlasTexture has no
-    rotation field, so rotated regions would render incorrectly.
+    Trimmed sprites get a `margin = Rect2(left, top, right, bottom)` so Godot
+    renders them at the original (pre-trim) size. Rotation is not supported by
+    AtlasTexture, so callers must pack with allow_rotation=False.
 
     Args:
-        resource_prefix: path fragment inserted between `res://` and the PNG filename.
-            Empty means the atlas must live at the Godot project root (res://atlas.png).
-            Pass "sprites/player/" to get `res://sprites/player/atlas.png`.
+        resource_prefix: path fragment inserted between `res://` and the PNG
+            filename. Empty means the atlas lives at the Godot project root.
 
     Returns:
         (png_path, list_of_tres_paths)
@@ -113,21 +123,29 @@ def export_atlas_godot(
     out_dir = Path(output_path).parent
     tres_paths: list[str] = []
 
-    for packed in packed_images:
-        sprite_stem = Path(packed.filename).stem
+    for p in packed_images:
+        sprite_stem = Path(p.filename).stem
         tres_path = out_dir / f"{sprite_stem}.tres"
 
-        content = (
-            '[gd_resource type="AtlasTexture" load_steps=2 format=3]\n'
-            '\n'
-            f'[ext_resource type="Texture2D" path="{res_path}" id="1"]\n'
-            '\n'
-            '[resource]\n'
-            'atlas = ExtResource("1")\n'
-            f'region = Rect2({packed.x}, {packed.y}, {packed.width}, {packed.height})\n'
-        )
+        lines = [
+            '[gd_resource type="AtlasTexture" load_steps=2 format=3]',
+            '',
+            f'[ext_resource type="Texture2D" path="{res_path}" id="1"]',
+            '',
+            '[resource]',
+            'atlas = ExtResource("1")',
+            f'region = Rect2({p.x}, {p.y}, {p.width}, {p.height})',
+        ]
 
-        tres_path.write_text(content)
+        if p.trimmed:
+            right_pad = p.source_width - p.trim_x - p.trim_w
+            bottom_pad = p.source_height - p.trim_y - p.trim_h
+            lines.append(
+                f'margin = Rect2({p.trim_x}, {p.trim_y}, {right_pad}, {bottom_pad})'
+            )
+
+        lines.append('')
+        tres_path.write_text('\n'.join(lines))
         tres_paths.append(str(tres_path))
 
     return png_path, tres_paths

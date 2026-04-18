@@ -1,6 +1,8 @@
-"""Maximal Rectangles bin packing algorithm for texture atlas generation."""
+"""Maximal Rectangles bin packing with transparency-trimming support."""
 
 from dataclasses import dataclass
+
+from PIL import Image
 
 
 @dataclass
@@ -12,17 +14,57 @@ class Rect:
 
 
 @dataclass
+class SpriteEntry:
+    """Input to the packer: a sprite with its non-transparent bbox."""
+    filepath: str
+    filename: str
+    source_width: int   # full image dimensions
+    source_height: int
+    trim_x: int         # bbox offset within the source image
+    trim_y: int
+    trim_w: int         # bbox dimensions — what actually gets packed
+    trim_h: int
+
+
+@dataclass
 class PackedImage:
     filepath: str
     filename: str
-    x: int
-    y: int
-    width: int
+    x: int              # position in atlas
+    y: int              # position in atlas
+    width: int          # dims in atlas (post-rotation)
     height: int
+    source_width: int   # full source image dimensions
+    source_height: int
+    trim_x: int         # offset of packed content within source
+    trim_y: int
+    trim_w: int         # packed content dims (pre-rotation)
+    trim_h: int
+    trimmed: bool
+    rotated: bool
+
+
+def compute_trim_bbox(filepath: str) -> tuple[int, int, int, int, int, int]:
+    """Return (source_w, source_h, trim_x, trim_y, trim_w, trim_h) for an image.
+
+    Uses the alpha channel to find the tight non-transparent bounding box.
+    A fully-transparent image returns the full image bounds (nothing to trim).
+    """
+    with Image.open(filepath) as img:
+        source_w, source_h = img.size
+        rgba = img.convert("RGBA") if img.mode != "RGBA" else img
+        alpha = rgba.split()[-1]
+        bbox = alpha.getbbox()
+
+    if bbox is None:
+        return (source_w, source_h, 0, 0, source_w, source_h)
+
+    left, top, right, bottom = bbox
+    return (source_w, source_h, left, top, right - left, bottom - top)
 
 
 class MaxRectsPacker:
-    """Packs rectangles into a bin using the Maximal Rectangles algorithm (Best Short Side Fit)."""
+    """Packs rectangles into a bin using Maximal Rectangles (Best Short Side Fit)."""
 
     def __init__(self, max_width: int, max_height: int, padding: int = 2, allow_rotation: bool = True):
         self.max_width = max_width
@@ -37,44 +79,56 @@ class MaxRectsPacker:
         self.free_rects = [Rect(0, 0, self.max_width, self.max_height)]
         self.used_rects = []
 
-    def pack(self, images: list[tuple[str, str, int, int]]) -> tuple[list[PackedImage], int, int]:
-        """Pack a list of images into the atlas.
-
-        Args:
-            images: list of (filepath, filename, width, height) tuples
+    def pack(self, sprites: list[SpriteEntry]) -> tuple[list[PackedImage], int, int]:
+        """Pack sprites into the atlas using their trim dimensions.
 
         Returns:
-            (packed_images, atlas_width, atlas_height)
-            packed_images is empty for any images that didn't fit.
+            (packed_images, atlas_width, atlas_height). Sprites that don't fit
+            are silently omitted from the result.
         """
         self._reset()
 
-        # Sort by max side descending — larger images first gives better packing
-        to_pack = list(images)
-        to_pack.sort(key=lambda img: max(img[2], img[3]), reverse=True)
+        to_pack = sorted(sprites, key=lambda s: max(s.trim_w, s.trim_h), reverse=True)
 
         packed: list[PackedImage] = []
-        failed: list[str] = []
-
-        for filepath, filename, w, h in to_pack:
-            padded_w = w + self.padding
-            padded_h = h + self.padding
+        for s in to_pack:
+            padded_w = s.trim_w + self.padding
+            padded_h = s.trim_h + self.padding
 
             result = self._insert(padded_w, padded_h)
             if result is None:
-                failed.append(filename)
                 continue
 
+            actual_w = result.width - self.padding
+            actual_h = result.height - self.padding
+
+            # Detect rotation. For squares (trim_w == trim_h) rotation is a no-op
+            # dimensionally, so we always report rotated=False and the exporter
+            # won't rotate pixels — matches prior behavior.
+            rotated = (
+                actual_w == s.trim_h
+                and actual_h == s.trim_w
+                and s.trim_w != s.trim_h
+            )
+            trimmed = (s.trim_w != s.source_width or s.trim_h != s.source_height)
+
             packed.append(PackedImage(
-                filepath=filepath,
-                filename=filename,
+                filepath=s.filepath,
+                filename=s.filename,
                 x=result.x,
                 y=result.y,
-                width=w,
-                height=h,
+                width=actual_w,
+                height=actual_h,
+                source_width=s.source_width,
+                source_height=s.source_height,
+                trim_x=s.trim_x,
+                trim_y=s.trim_y,
+                trim_w=s.trim_w,
+                trim_h=s.trim_h,
+                trimmed=trimmed,
+                rotated=rotated,
             ))
 
-        # Calculate tight atlas bounds
         if not packed:
             return packed, 0, 0
 
@@ -137,27 +191,22 @@ class MaxRectsPacker:
 
     def _split_free_rect(self, free: Rect, used: Rect) -> list[Rect] | None:
         """Split a free rectangle around a used rectangle. Returns None if no overlap."""
-        # Check for overlap
         if (used.x >= free.x + free.width or used.x + used.width <= free.x or
                 used.y >= free.y + free.height or used.y + used.height <= free.y):
             return None
 
         result = []
 
-        # Left fragment
         if used.x > free.x:
             result.append(Rect(free.x, free.y, used.x - free.x, free.height))
 
-        # Right fragment
         if used.x + used.width < free.x + free.width:
             result.append(Rect(used.x + used.width, free.y,
                                free.x + free.width - used.x - used.width, free.height))
 
-        # Top fragment
         if used.y > free.y:
             result.append(Rect(free.x, free.y, free.width, used.y - free.y))
 
-        # Bottom fragment
         if used.y + used.height < free.y + free.height:
             result.append(Rect(free.x, used.y + used.height,
                                free.width, free.y + free.height - used.y - used.height))
