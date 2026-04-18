@@ -125,16 +125,16 @@ Pick an output format from the **Format** dropdown next to the Export button.
 ```tres
 [gd_resource type="AtlasTexture" load_steps=2 format=3]
 
-[ext_resource type="Texture2D" path="res://atlas.png" id="1"]
+[ext_resource type="Texture2D" path="atlas.png" id="1"]
 
 [resource]
 atlas = ExtResource("1")
 region = Rect2(0, 0, 40, 30)
-margin = Rect2(12, 16, 12, 18)
+margin = Rect2(12, 16, 24, 34)
 ```
 
-Trimmed sprites include a `margin = Rect2(left, top, right, bottom)` so Godot still reports the original (pre-trim) sprite size when you query `get_size()` — your UI code and positioning logic keeps working as if the sprite weren't trimmed.
+The `path` is a bare filename — Godot resolves it relative to the `.tres` file, so the whole bundle can live in any subfolder of your project (`res://sprites/player/`, `res://enemies/boss/`, wherever). Just keep the PNG and all `.tres` files together.
 
-Drop the PNG and every `.tres` into the same folder inside your Godot project. The `.tres` files assume the PNG lives at `res://atlas.png` — if you place it elsewhere, update the `path` line in each `.tres`.
+Trimmed sprites include a `margin = Rect2(left, top, total_extra_width, total_extra_height)` so Godot still reports the original (pre-trim) sprite size when you query `get_size()` — your UI code and positioning logic keeps working as if the sprite weren't trimmed.
 
 Rotation is disabled in Godot mode (Godot's `AtlasTexture` has no rotation field), so atlases may be slightly larger than in Generic mode.

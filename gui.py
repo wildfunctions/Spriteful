@@ -694,8 +694,9 @@ class MainWindow(QMainWindow):
                     f"Atlas exported successfully!\n\n"
                     f"PNG: {png_path}\n"
                     f"{len(tres_paths)} AtlasTexture .tres files written alongside.\n\n"
-                    f"Each .tres references res://{Path(png_path).name} — move the PNG "
-                    f"into your Godot project root, or edit the paths if placed elsewhere.",
+                    f"Copy the PNG and every .tres into the same folder inside your "
+                    f"Godot project — the .tres files reference the PNG by filename "
+                    f"(resolved relative to each .tres), so the folder can live anywhere.",
                 )
             else:
                 png_path, json_path = export_atlas(

@@ -96,17 +96,17 @@ def export_atlas_godot(
     atlas_width: int,
     atlas_height: int,
     output_path: str,
-    resource_prefix: str = "",
 ) -> tuple[str, list[str]]:
     """Export the packed atlas as a PNG + one AtlasTexture .tres per sprite.
+
+    The ext_resource path is the bare PNG filename (no `res://` prefix), which
+    Godot resolves relative to the .tres file. Keep the PNG and all .tres files
+    in the same folder inside the project and the references stay valid wherever
+    that folder sits.
 
     Trimmed sprites get a `margin = Rect2(left, top, right, bottom)` so Godot
     renders them at the original (pre-trim) size. Rotation is not supported by
     AtlasTexture, so callers must pack with allow_rotation=False.
-
-    Args:
-        resource_prefix: path fragment inserted between `res://` and the PNG
-            filename. Empty means the atlas lives at the Godot project root.
 
     Returns:
         (png_path, list_of_tres_paths)
@@ -117,9 +117,6 @@ def export_atlas_godot(
     atlas.save(png_path, "PNG")
 
     png_filename = Path(png_path).name
-    prefix = resource_prefix.strip("/")
-    res_path = f"res://{prefix}/{png_filename}" if prefix else f"res://{png_filename}"
-
     out_dir = Path(output_path).parent
     tres_paths: list[str] = []
 
@@ -130,7 +127,7 @@ def export_atlas_godot(
         lines = [
             '[gd_resource type="AtlasTexture" load_steps=2 format=3]',
             '',
-            f'[ext_resource type="Texture2D" path="{res_path}" id="1"]',
+            f'[ext_resource type="Texture2D" path="{png_filename}" id="1"]',
             '',
             '[resource]',
             'atlas = ExtResource("1")',
