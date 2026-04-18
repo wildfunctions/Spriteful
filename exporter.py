@@ -138,10 +138,13 @@ def export_atlas_godot(
         ]
 
         if p.trimmed:
-            right_pad = p.source_width - p.trim_x - p.trim_w
-            bottom_pad = p.source_height - p.trim_y - p.trim_h
+            # Godot's AtlasTexture margin: position is the top-left offset added
+            # to the drawn region, size is the TOTAL extra size (left+right, top+bottom)
+            # so that get_size() == region.size + margin.size equals the source size.
+            margin_extra_w = p.source_width - p.trim_w
+            margin_extra_h = p.source_height - p.trim_h
             lines.append(
-                f'margin = Rect2({p.trim_x}, {p.trim_y}, {right_pad}, {bottom_pad})'
+                f'margin = Rect2({p.trim_x}, {p.trim_y}, {margin_extra_w}, {margin_extra_h})'
             )
 
         lines.append('')
