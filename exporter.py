@@ -96,6 +96,7 @@ def export_atlas_godot(
     atlas_width: int,
     atlas_height: int,
     output_path: str,
+    preserve_source_size: bool = True,
 ) -> tuple[str, list[str]]:
     """Export the packed atlas as a PNG + one AtlasTexture .tres per sprite.
 
@@ -104,9 +105,13 @@ def export_atlas_godot(
     in the same folder inside the project and the references stay valid wherever
     that folder sits.
 
-    Trimmed sprites get a `margin = Rect2(left, top, right, bottom)` so Godot
-    renders them at the original (pre-trim) size. Rotation is not supported by
-    AtlasTexture, so callers must pack with allow_rotation=False.
+    When `preserve_source_size` is True (the default), trimmed sprites get a
+    `margin = Rect2(...)` so Godot renders them at the original (pre-trim)
+    canvas size — required for AnimatedSprite2D to keep frames aligned. Set
+    False to omit the margin so sprites render at their trimmed size.
+
+    Rotation is not supported by AtlasTexture, so callers must pack with
+    allow_rotation=False.
 
     Returns:
         (png_path, list_of_tres_paths)
@@ -134,7 +139,7 @@ def export_atlas_godot(
             f'region = Rect2({p.x}, {p.y}, {p.width}, {p.height})',
         ]
 
-        if p.trimmed:
+        if p.trimmed and preserve_source_size:
             # Godot's AtlasTexture margin: position is the top-left offset added
             # to the drawn region, size is the TOTAL extra size (left+right, top+bottom)
             # so that get_size() == region.size + margin.size equals the source size.

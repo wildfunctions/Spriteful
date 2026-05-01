@@ -423,6 +423,15 @@ class MainWindow(QMainWindow):
         self.chk_trim.setToolTip("Crop transparent borders around each sprite before packing")
         bottom.addWidget(self.chk_trim)
 
+        self.chk_preserve_size = QCheckBox("Preserve original size")
+        self.chk_preserve_size.setChecked(True)
+        self.chk_preserve_size.setToolTip(
+            "Godot only: emit a margin so trimmed sprites render at their original "
+            "canvas size. Required for AnimatedSprite2D to keep frames aligned; "
+            "uncheck if you want sprites to render at their trimmed size."
+        )
+        bottom.addWidget(self.chk_preserve_size)
+
         bottom.addSpacing(20)
 
         bottom.addWidget(QLabel("Format:"))
@@ -687,6 +696,7 @@ class MainWindow(QMainWindow):
                     self.last_atlas_size[0],
                     self.last_atlas_size[1],
                     base,
+                    preserve_source_size=self.chk_preserve_size.isChecked(),
                 )
                 QMessageBox.information(
                     self,
