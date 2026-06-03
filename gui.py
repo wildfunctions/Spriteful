@@ -16,8 +16,10 @@ from PySide6.QtWidgets import (
 
 from packer import MaxRectsPacker, PackedImage, SpriteEntry, compute_trim_bbox, pack_tiles_grid
 from exporter import export_atlas, export_atlas_godot
+from psd_import import extract_to_temp
 
 SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tga", ".webp"}
+PSD_EXTENSIONS = {".psd"}
 
 ATLAS_SIZES = [256, 512, 1024, 2048, 4096, 8192]
 
@@ -62,14 +64,15 @@ class DropZoneList(QListWidget):
             super().dropEvent(event)
 
     def _collect_images(self, path: str) -> list[str]:
-        """Collect image files from a path (file or directory)."""
+        """Collect image and PSD files from a path (file or directory)."""
+        accepted = SUPPORTED_EXTENSIONS | PSD_EXTENSIONS
         result = []
         p = Path(path)
-        if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS:
+        if p.is_file() and p.suffix.lower() in accepted:
             result.append(str(p))
         elif p.is_dir():
             for f in sorted(p.iterdir()):
-                if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS:
+                if f.is_file() and f.suffix.lower() in accepted:
                     result.append(str(f))
         return result
 
@@ -476,7 +479,8 @@ class MainWindow(QMainWindow):
             self,
             "Select Images",
             "",
-            "Images (*.png *.jpg *.jpeg *.bmp *.gif *.tga *.webp);;All Files (*)",
+            "Images & PSD (*.png *.jpg *.jpeg *.bmp *.gif *.tga *.webp *.psd);;"
+            "All Files (*)",
         )
         if files:
             self._add_image_paths(files)
@@ -484,9 +488,10 @@ class MainWindow(QMainWindow):
     def _on_add_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Folder")
         if folder:
+            accepted = SUPPORTED_EXTENSIONS | PSD_EXTENSIONS
             paths = []
             for f in sorted(Path(folder).iterdir()):
-                if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS:
+                if f.is_file() and f.suffix.lower() in accepted:
                     paths.append(str(f))
             if paths:
                 self._add_image_paths(paths)
@@ -494,6 +499,21 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "No Images", "No supported image files found in that folder.")
 
     def _add_image_paths(self, paths: list[str]):
+        # Expand any dropped PSDs into per-layer PNGs, then treat them as normal
+        # images. Mixed drops (PSDs + images in one gesture) work the same way.
+        psd_paths = [p for p in paths if Path(p).suffix.lower() in PSD_EXTENSIONS]
+        if psd_paths:
+            image_paths = [p for p in paths if p not in psd_paths]
+            for psd in psd_paths:
+                try:
+                    image_paths.extend(extract_to_temp(psd))
+                except Exception as e:
+                    QMessageBox.warning(
+                        self, "PSD Import Failed",
+                        f"Could not import layers from:\n{Path(psd).name}\n\n{e}",
+                    )
+            paths = image_paths
+
         existing = {e.filepath for e in self.image_entries}
 
         added = 0
