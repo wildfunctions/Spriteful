@@ -9,12 +9,12 @@ from PySide6.QtCore import Qt, QMimeData, Signal, QTimer
 from PySide6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QListWidget, QLabel, QComboBox, QSpinBox, QFileDialog,
+    QListWidget, QListWidgetItem, QLabel, QComboBox, QSpinBox, QFileDialog,
     QMessageBox, QSplitter, QScrollArea, QFrame, QAbstractItemView,
     QSlider, QGroupBox, QCheckBox,
 )
 
-from packer import MaxRectsPacker, PackedImage, SpriteEntry, compute_trim_bbox
+from packer import MaxRectsPacker, PackedImage, SpriteEntry, compute_trim_bbox, pack_tiles_grid
 from exporter import export_atlas, export_atlas_godot
 
 SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tga", ".webp"}
@@ -326,6 +326,8 @@ class MainWindow(QMainWindow):
         self.image_entries: list[SpriteEntry] = []
         self.last_packed: list[PackedImage] = []
         self.last_atlas_size: tuple[int, int] = (0, 0)
+        # Tile-flagged sprites grouped by (w, h). Populated each repack.
+        self.last_tile_groups: list[tuple[tuple[int, int], list[PackedImage], int, int]] = []
 
         self._build_ui()
         self._connect_signals()
@@ -356,7 +358,7 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
 
-        list_label = QLabel("Images (drag & drop files here):")
+        list_label = QLabel("Images (drag & drop files here, check for tile):")
         list_label.setStyleSheet("font-weight: bold;")
         left_layout.addWidget(list_label)
 
@@ -467,6 +469,7 @@ class MainWindow(QMainWindow):
         self.chk_trim.toggled.connect(self._repack)
         self.combo_format.currentIndexChanged.connect(self._on_format_changed)
         self.file_list.itemSelectionChanged.connect(self._on_selection_changed)
+        self.file_list.itemChanged.connect(self._on_item_changed)
 
     def _on_add_files(self):
         files, _ = QFileDialog.getOpenFileNames(
@@ -516,9 +519,14 @@ class MainWindow(QMainWindow):
             self.image_entries.append(entry)
 
             if (tw, th) != (source_w, source_h):
-                self.file_list.addItem(f"{name}  ({source_w}x{source_h} → {tw}x{th})")
+                label = f"{name}  ({source_w}x{source_h} → {tw}x{th})"
             else:
-                self.file_list.addItem(f"{name}  ({source_w}x{source_h})")
+                label = f"{name}  ({source_w}x{source_h})"
+            item = QListWidgetItem(label)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+            item.setToolTip("Check to pack as a tile (grid-aligned, separate atlas)")
+            self.file_list.addItem(item)
 
             existing.add(path)
             added += 1
@@ -558,6 +566,17 @@ class MainWindow(QMainWindow):
         else:
             self.anim_player.set_frames([])
 
+    def _on_item_changed(self, item: QListWidgetItem):
+        """Tile checkbox toggled — repack."""
+        self._repack()
+
+    def _tile_indices(self) -> set[int]:
+        """Indices of image_entries flagged as tiles in the list."""
+        return {
+            i for i in range(self.file_list.count())
+            if self.file_list.item(i).checkState() == Qt.CheckState.Checked
+        }
+
     def _on_format_changed(self):
         """Format change may require repacking (Godot disables rotation)."""
         fmt = self.combo_format.currentData()
@@ -571,20 +590,23 @@ class MainWindow(QMainWindow):
             self.preview.set_preview(None)
             self.btn_export.setEnabled(False)
             self.lbl_atlas_info.setText("")
+            self.last_tile_groups = []
             return
 
         max_size = self.combo_size.currentData()
         padding = self.spin_padding.value()
         allow_rotation = self.combo_format.currentData() != FORMAT_GODOT
         trim_enabled = self.chk_trim.isChecked()
+        tile_indices = self._tile_indices()
 
-        if trim_enabled:
-            entries_to_pack = self.image_entries
-        else:
-            # Override each entry's trim bbox to the full image — same effect as
-            # "no trim" but keeps the packer interface uniform.
-            entries_to_pack = [
-                SpriteEntry(
+        # Split entries: tile-flagged sprites go into per-dimension groups; the
+        # rest pack into the main atlas. Trim never applies to tiles — trimming
+        # would crop edges and break tileable seams.
+        non_tile_entries: list[SpriteEntry] = []
+        tile_buckets: dict[tuple[int, int], list[SpriteEntry]] = {}
+        for i, e in enumerate(self.image_entries):
+            if i in tile_indices:
+                untrimmed = SpriteEntry(
                     filepath=e.filepath,
                     filename=e.filename,
                     source_width=e.source_width,
@@ -594,18 +616,39 @@ class MainWindow(QMainWindow):
                     trim_w=e.source_width,
                     trim_h=e.source_height,
                 )
-                for e in self.image_entries
-            ]
+                tile_buckets.setdefault((e.source_width, e.source_height), []).append(untrimmed)
+            else:
+                if trim_enabled:
+                    non_tile_entries.append(e)
+                else:
+                    non_tile_entries.append(SpriteEntry(
+                        filepath=e.filepath,
+                        filename=e.filename,
+                        source_width=e.source_width,
+                        source_height=e.source_height,
+                        trim_x=0,
+                        trim_y=0,
+                        trim_w=e.source_width,
+                        trim_h=e.source_height,
+                    ))
 
+        # Pack non-tile sprites into the main atlas.
         packer = MaxRectsPacker(max_size, max_size, padding, allow_rotation=allow_rotation)
-        packed, atlas_w, atlas_h = packer.pack(entries_to_pack)
-
+        packed, atlas_w, atlas_h = packer.pack(non_tile_entries)
         self.last_packed = packed
         self.last_atlas_size = (atlas_w, atlas_h)
 
-        failed_count = len(self.image_entries) - len(packed)
+        # Pack each tile-dimension group on its own grid.
+        self.last_tile_groups = []
+        for dim, entries in sorted(tile_buckets.items()):
+            tpacked, tw, th = pack_tiles_grid(entries, max_atlas_size=max_size)
+            self.last_tile_groups.append((dim, tpacked, tw, th))
 
-        if not packed:
+        non_tile_failed = len(non_tile_entries) - len(packed)
+        total_packed = len(packed) + sum(len(p) for _, p, _, _ in self.last_tile_groups)
+
+        any_output = bool(packed) or bool(self.last_tile_groups)
+        if not any_output:
             self.preview.set_preview(None)
             self.btn_export.setEnabled(False)
             self.lbl_atlas_info.setText("No images could fit in the atlas. Try a larger size.")
@@ -613,13 +656,22 @@ class MainWindow(QMainWindow):
 
         self.btn_export.setEnabled(True)
 
-        # Render preview
-        preview_img = self._render_preview(packed, atlas_w, atlas_h)
+        # Preview: main atlas if it has anything, otherwise the first tile atlas.
+        if packed:
+            preview_img = self._render_preview(packed, atlas_w, atlas_h)
+        else:
+            _, tpacked, tw, th = self.last_tile_groups[0]
+            preview_img = self._render_preview(tpacked, tw, th)
         self.preview.set_preview(preview_img)
 
-        info = f"Atlas: {atlas_w}x{atlas_h}  |  {len(packed)} packed"
-        if failed_count > 0:
-            info += f"  |  {failed_count} didn't fit!"
+        info_parts = []
+        if packed:
+            info_parts.append(f"Main: {atlas_w}x{atlas_h}")
+        for dim, tpacked, tw, th in self.last_tile_groups:
+            info_parts.append(f"Tiles {dim[0]}x{dim[1]}: {tw}x{th} ({len(tpacked)})")
+        info = "  |  ".join(info_parts) + f"  |  {total_packed} packed"
+        if non_tile_failed > 0:
+            info += f"  |  {non_tile_failed} didn't fit!"
         self.lbl_atlas_info.setText(info)
 
     def _render_preview(self, packed: list[PackedImage], atlas_w: int, atlas_h: int) -> QPixmap:
@@ -670,7 +722,7 @@ class MainWindow(QMainWindow):
         return QPixmap.fromImage(img)
 
     def _on_export(self):
-        if not self.last_packed:
+        if not self.last_packed and not self.last_tile_groups:
             return
 
         path, _ = QFileDialog.getSaveFileName(
@@ -688,39 +740,51 @@ class MainWindow(QMainWindow):
             base = base[:-4]
 
         fmt = self.combo_format.currentData()
+        outputs: list[str] = []  # human-readable list of files written
 
         try:
             if fmt == FORMAT_GODOT:
-                png_path, tres_paths = export_atlas_godot(
-                    self.last_packed,
-                    self.last_atlas_size[0],
-                    self.last_atlas_size[1],
-                    base,
-                    preserve_source_size=self.chk_preserve_size.isChecked(),
-                )
+                if self.last_packed:
+                    png_path, tres_paths = export_atlas_godot(
+                        self.last_packed,
+                        self.last_atlas_size[0],
+                        self.last_atlas_size[1],
+                        base,
+                        preserve_source_size=self.chk_preserve_size.isChecked(),
+                    )
+                    outputs.append(f"Main atlas: {png_path}  (+ {len(tres_paths)} .tres)")
+                for dim, tpacked, tw, th in self.last_tile_groups:
+                    tile_base = f"{base}_tiles_{dim[0]}x{dim[1]}"
+                    png_path, tres_paths = export_atlas_godot(
+                        tpacked, tw, th, tile_base, preserve_source_size=False,
+                    )
+                    outputs.append(
+                        f"Tile atlas {dim[0]}x{dim[1]}: {png_path}  (+ {len(tres_paths)} .tres)"
+                    )
                 QMessageBox.information(
                     self,
                     "Export Complete",
-                    f"Atlas exported successfully!\n\n"
-                    f"PNG: {png_path}\n"
-                    f"{len(tres_paths)} AtlasTexture .tres files written alongside.\n\n"
-                    f"Copy the PNG and every .tres into the same folder inside your "
-                    f"Godot project — the .tres files reference the PNG by filename "
-                    f"(resolved relative to each .tres), so the folder can live anywhere.",
+                    "Atlases exported:\n\n" + "\n".join(outputs) +
+                    "\n\nFor tile atlases, configure the Godot TileSet with "
+                    f"texture_region_size matching each tile's dimensions.",
                 )
             else:
-                png_path, json_path = export_atlas(
-                    self.last_packed,
-                    self.last_atlas_size[0],
-                    self.last_atlas_size[1],
-                    base,
-                )
+                if self.last_packed:
+                    png_path, json_path = export_atlas(
+                        self.last_packed,
+                        self.last_atlas_size[0],
+                        self.last_atlas_size[1],
+                        base,
+                    )
+                    outputs.append(f"Main atlas: {png_path}  (+ {json_path})")
+                for dim, tpacked, tw, th in self.last_tile_groups:
+                    tile_base = f"{base}_tiles_{dim[0]}x{dim[1]}"
+                    png_path, json_path = export_atlas(tpacked, tw, th, tile_base)
+                    outputs.append(f"Tile atlas {dim[0]}x{dim[1]}: {png_path}  (+ {json_path})")
                 QMessageBox.information(
                     self,
                     "Export Complete",
-                    f"Atlas exported successfully!\n\n"
-                    f"PNG: {png_path}\n"
-                    f"JSON: {json_path}",
+                    "Atlases exported:\n\n" + "\n".join(outputs),
                 )
         except Exception as e:
             QMessageBox.critical(self, "Export Failed", f"Error exporting atlas:\n{e}")

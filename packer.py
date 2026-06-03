@@ -1,5 +1,6 @@
 """Maximal Rectangles bin packing with transparency-trimming support."""
 
+import math
 from dataclasses import dataclass
 
 from PIL import Image
@@ -235,3 +236,53 @@ class MaxRectsPacker:
         return (a.x <= b.x and a.y <= b.y and
                 a.x + a.width >= b.x + b.width and
                 a.y + a.height >= b.y + b.height)
+
+
+def pack_tiles_grid(
+    sprites: list[SpriteEntry],
+    max_atlas_size: int = 4096,
+) -> tuple[list[PackedImage], int, int]:
+    """Pack sprites of identical dimensions into a grid-aligned tile atlas.
+
+    Every sprite must share the same source_width / source_height. Trim is
+    ignored — each tile occupies its full source size. Tiles are placed at
+    (col*W, row*H) so the atlas is consumable by Godot's TileSet (or any
+    grid-based tile sampler) without per-tile metadata.
+    """
+    if not sprites:
+        return [], 0, 0
+
+    tile_w = sprites[0].source_width
+    tile_h = sprites[0].source_height
+    if any(s.source_width != tile_w or s.source_height != tile_h for s in sprites):
+        raise ValueError("pack_tiles_grid requires sprites of identical dimensions")
+
+    n = len(sprites)
+    cols_cap = max(1, max_atlas_size // tile_w)
+    cols = min(cols_cap, max(1, math.ceil(math.sqrt(n))))
+    rows = math.ceil(n / cols)
+
+    packed: list[PackedImage] = []
+    for i, s in enumerate(sprites):
+        col = i % cols
+        row = i // cols
+        packed.append(PackedImage(
+            filepath=s.filepath,
+            filename=s.filename,
+            x=col * tile_w,
+            y=row * tile_h,
+            width=tile_w,
+            height=tile_h,
+            source_width=tile_w,
+            source_height=tile_h,
+            trim_x=0,
+            trim_y=0,
+            trim_w=tile_w,
+            trim_h=tile_h,
+            trimmed=False,
+            rotated=False,
+        ))
+
+    atlas_w = cols * tile_w
+    atlas_h = rows * tile_h
+    return packed, atlas_w, atlas_h
