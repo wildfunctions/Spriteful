@@ -1,16 +1,28 @@
 """Spriteful — A free, open-source texture packer."""
 
 import sys
+from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon
 
 from gui import MainWindow
+
+
+def _resource_path(name: str) -> str:
+    """Resolve a bundled resource both from source and the PyInstaller exe."""
+    base = getattr(sys, "_MEIPASS", str(Path(__file__).parent))
+    return str(Path(base) / name)
 
 
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+
+    icon_path = _resource_path("spriteful.ico")
+    if Path(icon_path).exists():
+        app.setWindowIcon(QIcon(icon_path))
 
     # Dark palette for a modern look
     from PySide6.QtGui import QPalette, QColor
